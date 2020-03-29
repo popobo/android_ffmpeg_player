@@ -6,6 +6,8 @@ extern "C"{//找不到头文件，则在CMakeLists.txt中添加头文件路径
 #include "include/libavcodec/avcodec.h"
 #include "include/libavformat/avformat.h"
 #include "include/libavcodec/jni.h"
+#include "include/libswscale/swscale.h" //像素格式转换头文件
+#include "libswresample/swresample.h" //重采样
 }
 
 static double r2d(AVRational r){
@@ -121,7 +123,7 @@ Java_com_bo_test_1ffmpeg_MainActivity_stringFromJNI(
         LOGW("avcodec_find_decoder audio fialed");
         return env->NewStringUTF(hello.c_str());
     }
-    //解码器初始化
+    //音频解码器上下文初始化
     AVCodecContext * ac = avcodec_alloc_context3(acodec);
     //复制
     avcodec_parameters_to_context(ac, ic->streams[audioStream]->codecpar);
@@ -135,8 +137,28 @@ Java_com_bo_test_1ffmpeg_MainActivity_stringFromJNI(
     //读取帧数据
     AVPacket *pkt = av_packet_alloc();//创建AVPacket对象并初始化
     AVFrame *frame = av_frame_alloc();
+
+    //初始化像素格式转换的上下文
+    SwsContext *vctx = NULL;
+    int outWidth = 1920;
+    int outHeight = 1080;
+
+    //音频重采样上下文初始化
+    SwrContext *actx = swr_alloc();
+    actx = swr_alloc_set_opts(actx, av_get_default_channel_layout(2), AV_SAMPLE_FMT_S16, ac->sample_rate, av_get_default_channel_layout(ac->channels), ac->sample_fmt, ac->sample_rate, 0, 0);
+    ret = swr_init(actx);
+
     long long start = GetNowMs();
     int frameConut = 1;
+    char *rgb = new char[1920 * 1080 * 4];
+    char *pcm = new char[48000 * 4 * 2];
+
+    if (ret != 0){
+        LOGW("swr_init failed");
+    } else{
+        LOGW("swr_init success");
+    }
+
     for(;;){
         //超过三秒
         if (GetNowMs() - start >= 3000){
@@ -175,6 +197,7 @@ Java_com_bo_test_1ffmpeg_MainActivity_stringFromJNI(
             continue;
         }
 
+
         //这样能够保证收到所有解码后的数据, 取最后一帧时. 要send一个null pkt进去
         for(;;){
             ret = avcodec_receive_frame(tempC, frame);
@@ -185,11 +208,40 @@ Java_com_bo_test_1ffmpeg_MainActivity_stringFromJNI(
             //如果是视频帧
             if (tempC == vc){
                 frameConut++;
-
+                //从缓冲中获取SwsContext, 如果宽高比不变只会初始化一次, 在解码后获取,保证能够得到宽高
+                vctx = sws_getCachedContext(vctx,
+                        frame->width,
+                        frame->height,
+                        (AVPixelFormat)frame->format,
+                        outWidth,
+                        outHeight,
+                        AV_PIX_FMT_RGBA,
+                        SWS_FAST_BILINEAR,
+                        0,0,0);
+                if(!vctx){
+                    LOGW("sws_getCachedContext failed");
+                } else{
+                    uint8_t *data[AV_NUM_DATA_POINTERS] = {0};
+                    //转换出的数据不是平面方式存储,申请一个数组
+                    data[0] = (uint8_t*)rgb;
+                    int lines[AV_NUM_DATA_POINTERS] = {0};
+                    lines[0] = outWidth * 4;
+                    //视频 改变图像宽高和转换像素格式
+                    int height = sws_scale(vctx, frame->data, frame->linesize, 0, frame->height, data, lines);
+                    LOGW("sws_scale = %d", height);
+                }
+            } else{
+                uint8_t *out[2] = {0};
+                out[0] = (uint8_t*)pcm;
+                //音频重采样
+                int len = swr_convert(actx, out, frame->nb_samples, (const uint8_t**)frame->data, frame->nb_samples);
+                LOGW("swr_convert = %d", len);
             }
         }
     }
 
+    delete[] rgb;
+    delete[] pcm;
     //关闭上下文
     avformat_close_input(&ic);
     return env->NewStringUTF(hello.c_str());
@@ -212,4 +264,11 @@ Java_com_bo_test_1ffmpeg_MainActivity_open(JNIEnv *env, jobject thiz, jstring ur
     env->ReleaseStringUTFChars(url, cUrl);
 
     return true;
+}
+
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_bo_test_1ffmpeg_XPlay_Open(JNIEnv *env, jobject thiz, jstring url, jobject surface) {
+
 }
