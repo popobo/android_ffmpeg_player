@@ -5,12 +5,29 @@
 extern "C"{//找不到头文件，则在CMakeLists.txt中添加头文件路径
 #include "include/libavcodec/avcodec.h"
 #include "include/libavformat/avformat.h"
+#include "include/libavcodec/jni.h"
 }
-
-
 
 static double r2d(AVRational r){
     return  r.num == 0|| r.den == 0 ? 0. : (double)r.num/(double)r.den;
+}
+
+//当前时间戳 clock多线程不可靠
+long long GetNowMs(){
+    struct timeval tv;
+    gettimeofday(&tv, NULL);//因为操作系统有误差
+    int sec = tv.tv_sec % 360000;//防止返回的值太大
+    long long t = sec * 1000 + tv.tv_usec / 1000;
+    return  t;
+}
+
+extern  "C"
+JNIEXPORT
+//android加载后会调用
+jint JNI_OnLoad(JavaVM *vm, void *res){
+    //将java虚拟机的环境传递给ffmpeg
+    av_jni_set_java_vm(vm, 0);
+    return  JNI_VERSION_1_4;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -24,6 +41,9 @@ Java_com_bo_test_1ffmpeg_MainActivity_stringFromJNI(
     av_register_all();
     //初始化网络
     avformat_network_init();
+    //编码器注册
+    avcodec_register_all();
+
     //打开文件
     AVFormatContext *ic = NULL;
     char path[] = "/sdcard/test.mp4";
@@ -71,21 +91,103 @@ Java_com_bo_test_1ffmpeg_MainActivity_stringFromJNI(
     audioStream = av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
     LOGW("av_find_best_stream audioStream=%d\n", audioStream);
 
+    //打开视频编码器
+    //软解码器
+//    AVCodec *vcodec = avcodec_find_decoder(ic->streams[videoStream]->codecpar->codec_id);
+//    if (!vcodec){
+//        LOGW("avcodec_find_decoder video fialed");
+//        return env->NewStringUTF(hello.c_str());
+//    }
+    //硬解码
+    AVCodec *vcodec = avcodec_find_decoder_by_name("h264_mediacodec");
+    if (!vcodec){
+        LOGW("avcodec_find_decoder_by_name fialed");
+        return env->NewStringUTF(hello.c_str());
+    }
+    //解码器初始化
+    AVCodecContext * vc = avcodec_alloc_context3(vcodec);
+    //复制
+    avcodec_parameters_to_context(vc, ic->streams[videoStream]->codecpar);
+    vc->thread_count = 1;
+    ret = avcodec_open2(vc, 0, 0);
+    if (0 != ret){
+        LOGW("avcodec_open2 video failed");
+        return env->NewStringUTF(hello.c_str());
+    }
+
+    //打开音频解码器
+    AVCodec *acodec = avcodec_find_decoder(ic->streams[audioStream]->codecpar->codec_id);
+    if (!acodec){
+        LOGW("avcodec_find_decoder audio fialed");
+        return env->NewStringUTF(hello.c_str());
+    }
+    //解码器初始化
+    AVCodecContext * ac = avcodec_alloc_context3(acodec);
+    //复制
+    avcodec_parameters_to_context(ac, ic->streams[audioStream]->codecpar);
+    ac->thread_count = 1;
+    ret = avcodec_open2(ac, 0, 0);
+    if (0 != ret){
+        LOGW("avcodec_open2 audio failed");
+        return env->NewStringUTF(hello.c_str());
+    }
+
     //读取帧数据
     AVPacket *pkt = av_packet_alloc();//创建AVPacket对象并初始化
+    AVFrame *frame = av_frame_alloc();
+    long long start = GetNowMs();
+    int frameConut = 1;
     for(;;){
+        //超过三秒
+        if (GetNowMs() - start >= 3000){
+            LOGW("now decode fps = %d", frameConut/3);
+            start = GetNowMs();
+            frameConut = 0;
+        }
+
         ret = av_read_frame(ic, pkt);
+
         if (0 != ret){
             LOGW("读取到结尾处");
-            int pos = 0 * r2d(ic->streams[videoStream]->time_base);
+            int pos = 20 * r2d(ic->streams[videoStream]->time_base);
             av_seek_frame(ic, videoStream, pos, AVSEEK_FLAG_BACKWARD|AVSEEK_FLAG_FRAME);
             continue;
         }
-        LOGW("stream = %d, size = %d, pts = %lld, flag = %d",
-                pkt->stream_index, pkt->size, pkt->pts, pkt->flags);
+//        LOGW("stream = %d, size = %d, pts = %lld, flag = %d",
+//             pkt->stream_index, pkt->size, pkt->pts, pkt->flags);
         //操作
-        //释放内存
+        //清理释放内存
+
+        //只测试视频
+//        if (pkt->stream_index != videoStream){
+//            continue;
+//        }
+        AVCodecContext *tempC = vc;
+        if (pkt->stream_index == audioStream){
+            tempC = ac;
+        }
+
+        //发送到线程中解码, pkt会被复制一份, 所以可以unref掉
+        ret = avcodec_send_packet(tempC, pkt);
         av_packet_unref(pkt);
+        if (ret != 0){
+            LOGW("avcodec_send_packet failed");
+            continue;
+        }
+
+        //这样能够保证收到所有解码后的数据, 取最后一帧时. 要send一个null pkt进去
+        for(;;){
+            ret = avcodec_receive_frame(tempC, frame);
+            if (ret != 0){
+                break;
+            }
+//            LOGW("avcodec_receive_frame %lld", frame->pts);
+            //如果是视频帧
+            if (tempC == vc){
+                frameConut++;
+
+            }
+        }
     }
 
     //关闭上下文
