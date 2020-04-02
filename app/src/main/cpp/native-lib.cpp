@@ -66,6 +66,29 @@ SLEngineItf CreateSL(){
     return  en;
 }
 
+void PcmCall(SLAndroidSimpleBufferQueueItf bf, void *contex)
+{
+    LOGW("PcmCall");
+    static FILE *fp = NULL;
+    static char *buf = NULL;
+    if(!buf){
+        buf = new char[1024 * 1024];
+    }
+    if(!fp){
+        //用二进制的方式打开, 因为ASCII只用7位, 会把符号位去掉
+        fp = fopen("/sdcard/test.pcm", "rb");
+    }
+    if (!fp){
+        return;
+    }
+    //没有到结尾
+    if(feof(fp) == 0){
+        int len = fread(buf, 1, 1024, fp);
+        if (len > 0){
+            (*bf)->Enqueue(bf, buf, len);
+        }
+    }
+}
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_bo_test_1ffmpeg_MainActivity_stringFromJNI(
@@ -115,6 +138,42 @@ Java_com_bo_test_1ffmpeg_MainActivity_stringFromJNI(
     };
     //生成结构体给播放器使用
     SLDataSource ds = {&que, &pcm};
+
+    //4 创建播放器
+    SLObjectItf player = NULL;
+    SLPlayItf playerInterface;
+    SLAndroidSimpleBufferQueueItf pcmQueue;
+    const SLInterfaceID ids[] = {SL_IID_BUFFERQUEUE};//表示需要哪些接口
+    const SLboolean req[] = {SL_BOOLEAN_TRUE};//表示这个接口是开放还是关闭
+    ret = (*en)->CreateAudioPlayer(en, &player, &ds, &audioSink, sizeof(ids)/ sizeof(SLInterfaceID), ids ,req);
+    if (ret != SL_RESULT_SUCCESS){
+        LOGW("(*en)->CreateAudioPlayer failed!");
+    }else{
+        LOGW("(*en)->CreateAudioPlayer successfully!");
+    }
+    //实例化
+    (*player)->Realize(player, SL_BOOLEAN_FALSE);
+    //获取player接口
+    ret = (*player)->GetInterface(player, SL_IID_PLAY, &playerInterface);
+    if (ret != SL_RESULT_SUCCESS){
+        LOGW("(*player)->GetInterface playerInterface failed!");
+    }else{
+        LOGW("(*player)->GetInterface playerInterface successfully!");
+    }
+    //获取队列接口
+    ret = (*player)->GetInterface(player, SL_IID_BUFFERQUEUE, &pcmQueue);
+    if (ret != SL_RESULT_SUCCESS){
+        LOGW("(*player)->GetInterface pcmQueue failed!");
+    }else{
+        LOGW("(*player)->GetInterface pcmQueue successfully!");
+    }
+
+    //设置缓冲接口回调函数,播放队列空的时候调用, 第一次要先放点东西
+    (*pcmQueue)->RegisterCallback(pcmQueue, PcmCall, 0);
+    //设置为播放状态
+    (*playerInterface)->SetPlayState(playerInterface, SL_PLAYSTATE_PLAYING);
+    //启动队列回调
+    (*pcmQueue)->Enqueue(pcmQueue, "", 1);
 
     return env->NewStringUTF(hello.c_str());
 }
