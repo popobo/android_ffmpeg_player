@@ -5,6 +5,7 @@ import android.util.AttributeSet;
 import android.view.SurfaceHolder;
 import android.content.Context;
 
+//引入SurfaceHolder.Callback主要是为了知道surface什么时候初始化好了
 public class XPlay extends GLSurfaceView implements Runnable, SurfaceHolder.Callback {
     public XPlay(Context context, AttributeSet attrs){
         //AttributeSet默认输入
@@ -14,7 +15,7 @@ public class XPlay extends GLSurfaceView implements Runnable, SurfaceHolder.Call
     @Override
     public void run() {
         //在线程中调用,不阻塞画面的刷新
-        Open("/sdcard/test.mp4", getHolder().getSurface());
+        Open("/sdcard/out.yuv", getHolder().getSurface());
     }
 
     @Override
@@ -33,5 +34,6 @@ public class XPlay extends GLSurfaceView implements Runnable, SurfaceHolder.Call
 //        super.surfaceDestroyed(holder);
     }
 
+    //NDK函数
     public native void Open(String url, Object surface);
 }

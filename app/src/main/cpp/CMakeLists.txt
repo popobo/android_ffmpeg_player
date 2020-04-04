@@ -59,7 +59,11 @@ find_library( # Sets the name of the path variable.
 target_link_libraries( # Specifies the target library.
         native-lib
         #将avcodec链接到native-lib中
-        avcodec avformat avutil swscale swresample android OpenSLES
+        avcodec avformat avutil swscale swresample android
+        OpenSLES
+        GLESv2
+        EGL
+        android
         # Links the target library to the log library
         # included in the NDK.
         ${log-lib})
